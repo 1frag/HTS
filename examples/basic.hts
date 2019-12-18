@@ -1,0 +1,18 @@
+int a;
+int b;
+int c;
+a = 123;
+b = 45;
+c = a + b + 678;
+out(a / b - c * 9);
+
+~~~
+Это комментарий
+~~~
+
+for (str cymb in "qwertyuio") {
+    out("now: " + cymb + "\n");
+    if (cimb == 'u') {
+        out("when cimb='u'"); ~ Должно распечататься после 'now: u' ~
+    }
+}
