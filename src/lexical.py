@@ -81,7 +81,7 @@ class SourceCode:
                     t = safe_get(code[i + 1:], '~', -1)
                     n = safe_get(code[i + 1:], '\n', t + 1)
                     if n > t:
-                        i = put(i, i + t + 2, 'STR')
+                        i = put(i, i + t + 2, 'COMMENT')
                     else:
                         raise LexicalError("todo:")
             elif code[i] == '"':
@@ -98,6 +98,7 @@ class SourceCode:
                     raise LexicalError("todo:")
             else:
                 i += 1
+        blocks.append((code[bgn:], 'CODE'))
         self.codes.append(blocks)
 
     def _parse_words(self):
@@ -126,6 +127,7 @@ class SourceCode:
                         yield [None, c]
 
         for info, word in gen():
+            print(f'>>>{(info, word)=}')
             if word == '':
                 continue
             tp = {
@@ -135,8 +137,8 @@ class SourceCode:
                 '/': Word.SLESH,
                 '[': Word.QW_OPEN,
                 ']': Word.QW_CLOSE,
-                '{': Word.SQB_CLOSE,
-                '}': Word.SQB_OPEN,
+                '{': Word.SQB_OPEN,
+                '}': Word.SQB_CLOSE,
                 '+': Word.PLUS,
                 '-': Word.MINUS,
                 '=': Word.EQ,
@@ -153,7 +155,10 @@ class SourceCode:
             if tp == Word.WORD:
                 info, tp = self._specialize_word(word)
             blocks.append([info, tp])
+            print(f'<<<{(info, tp)=}')
         self.codes.append(blocks)
+        from pprint import pprint
+        pprint(f'{self.codes[-1]}')
 
     @staticmethod
     def _specialize_word(word):
@@ -179,11 +184,10 @@ class SourceCode:
 
             @property
             def breakpoint(self):
-                if self.kind == 'PARENTHESES':
-                    return Word.BR_CLOSE
-                if self.kind in ['BRACES', 'MAIN']:
-                    return Word.SQB_CLOSE
-                return None
+                return {
+                    'PARENTHESES': Word.BR_CLOSE,
+                    'BRACES': Word.SQB_CLOSE,
+                }.get(self.kind, None)
 
             def as_dict(self):
                 for_child = []
@@ -192,27 +196,28 @@ class SourceCode:
                 return {
                     'type': self.kind,
                     'comm': for_child,
+                    'info': self.info,
                 }
 
         cur = Node('MAIN', rebel=[None, Word.SQB_OPEN])
-        for info, tp in self.codes[-1]:
+
+        for info, tp in self.codes[-1][0:]:
+            print(f'{info=}, {tp=}')
             if tp == Word.BR_OPEN:
                 new_item = Node('PARENTHESES', parent=cur, rebel=[info, tp])
+                cur.child.append(new_item)
                 cur = new_item
             elif tp == Word.SQB_OPEN:
                 new_item = Node('BRACES', parent=cur, rebel=[info, tp])
                 cur.child.append(new_item)
                 cur = new_item
             elif tp == cur.breakpoint:
-                if cur.parent is not None:
-                    cur = cur.parent
-                else:
-                    return cur
+                cur = cur.parent
             else:
                 new_item = Node('STATEMENT', parent=cur,
                                 rebel=[info, tp])
                 cur.child.append(new_item)
-        if cur is not None:
+        if cur.kind != 'MAIN':
             raise LexicalError("todo:")
         return cur
 
@@ -221,7 +226,7 @@ class SourceCode:
         struct_name = None
 
         def check_parentheses(self, nde):
-            raise NotImplementedError
+            raise NotImplementedError  # this method must be override
 
         @staticmethod
         def check_value(nde, begin_from):
