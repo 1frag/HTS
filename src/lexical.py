@@ -8,30 +8,26 @@ from sty import (
 from pprint import pprint
 from typing import List, Any
 from enum import auto, Enum
+from queue import Queue
 
 
-def main():
-    if len(sys.argv) < 2:
-        fatal('Give me your file.hts')
-    if not sys.argv[1].endswith('.hts'):
-        fatal('Invalid extension. I can understand only *.hts files')
-    if not os.path.exists(sys.argv[1]):
-        fatal('File not exists')
-    with open(sys.argv[1]) as file:
-        do(file.read())
-
-
-def do(code):
-    sc = SourceCode(code)  # type: SourceCode
-
+def do(code, to_runner, to_lexical, with_running=True):
     def present():
         nonlocal sc
         fg.some_color = Style(RgbFg(102, 153, 204))
         print(fg.some_color)
-        pprint(sc.program.as_dict())
+        pprint(sc.program)
         print(fg.some_color)
 
-    present()
+    try:
+        to_runner.put_nowait(('START',))
+        sc = SourceCode(code)  # type: SourceCode
+        if with_running:
+            sc.present(to_runner, to_lexical)  # запустить код
+        else:
+            present()  # показать обработанные данные
+    finally:
+        to_runner.put_nowait(('END',))
 
 
 class LexicalError(Exception):
@@ -49,11 +45,96 @@ class SourceCode:
         self.program = self._parse_brackets()
         self._assert_correct_for()
         self._assert_correct_if()
+        self._get_specific_statements()
+
+    def _get_specific_statements(self):
+        def cleanup(lst):
+            for item in lst:
+                if isinstance(item, list) and item[1] == Word.SEMI:
+                    pass
+                else:
+                    yield item
+
+        def parse_br_in_for(node):
+            colourful(node)
+            for ind, elem in enumerate(node['body']):
+                if elem[1] == Word.IN:
+                    return node['body'][:ind], node['body'][ind + 1:]
+            raise LexicalError('For must contains word `in`')
+
+        def inner(node):
+            if node.info[1] in [Word.QW_OPEN, Word.SQB_OPEN, Word.BR_OPEN]:
+                for k in range(len(node.child)):
+                    node.child[k] = inner(node.child[k])
+                ind = 0
+                while ind < len(node.child):
+                    if isinstance(node.child[ind], dict):
+                        # бывший фор или иф, - пролетает
+                        ind += 1
+                        continue
+                    if node.child[ind][1] == Word.FOR:
+                        using_var, iter_obj = parse_br_in_for(node.child[ind + 1])
+                        node.child[ind] = {  # rewrite `for`-node
+                            'type': 'FOR',
+                            'using_var': using_var,
+                            'iter_obj': iter_obj,
+                            'body': node.child[ind + 2]['body'],
+                        }
+                        for _ in range(2):  # remove () and {}
+                            del node.child[ind + 1]
+                    elif node.child[ind][1] == Word.IF:
+                        node.child[ind] = {  # rewrite `if`-node
+                            'type': 'IF',
+                            'condition': node.child[ind + 1]['body'],
+                            'body': node.child[ind + 2]['body'],
+                        }
+                        for _ in range(2):  # remove () and {}
+                            del node.child[ind + 1]
+                    else:
+                        make, j = [node.child[ind], ], ind + 1
+                        print(node.child)
+                        while j < len(node.child):
+                            make.append(node.child[j])
+                            cp = node.child[j]
+                            del node.child[j]
+                            if not isinstance(cp, list):
+                                continue
+                            if cp[1] == Word.SEMI:
+                                break
+
+                        node.child[ind] = {
+                            'type': 'STATEMENT',
+                            'body': list(cleanup(make)),
+                        }
+                # ind += 1
+                return {
+                    'type': {
+                        Word.BR_OPEN: 'SCOPE()',
+                        Word.SQB_OPEN: 'SCOPE{}',
+                        Word.QW_OPEN: 'SCOPE[]',
+                    }[node.info[1]],
+                    'body': node.child,
+                }
+            else:
+                return node.info
+
+        self.program = inner(self.program)
+
+    def present(self, to_runner: Queue, to_lexical: Queue):  # top-level function
+        def _present(node):  # recursive method
+            if not node.child:
+                pass
+            else:
+                for nd in node.child:
+                    _present(nd)
+
+        to_runner.put_nowait(('START',))
+        _present(self.program)
+        to_runner.put_nowait(('END',))
 
     def _prepare(self):
         try:
-            ind = self.codes[0].index('{') + 13
-            self.codes[0] = ';'.join([self.codes[0][:ind], self.codes[0][ind:]])
+            self.codes[0] = self.codes[0].replace('{', '{;')
             self.codes[0] = self.codes[0].replace('}', '};')
         except ValueError:
             fatal('Not found {')
@@ -63,7 +144,6 @@ class SourceCode:
 
         def put(begin, end, type_):  # [...) like range
             nonlocal bgn, blocks, code
-            colourful(code[begin:end])
             blocks.append((code[bgn:begin], 'CODE'))
             blocks.append((code[begin:end], type_))
             bgn = end
@@ -112,7 +192,6 @@ class SourceCode:
                     yield [code, ';STR;']
                     continue
                 if tp_ == 'COMMENT':
-                    green_print('Comment had been ignored by lexical module', code)
                     continue
                 left = 0
                 for i, c in enumerate(code):
@@ -127,7 +206,6 @@ class SourceCode:
                         yield [None, c]
 
         for info, word in gen():
-            print(f'>>>{(info, word)=}')
             if word == '':
                 continue
             tp = {
@@ -155,10 +233,7 @@ class SourceCode:
             if tp == Word.WORD:
                 info, tp = self._specialize_word(word)
             blocks.append([info, tp])
-            print(f'<<<{(info, tp)=}')
         self.codes.append(blocks)
-        from pprint import pprint
-        pprint(f'{self.codes[-1]}')
 
     @staticmethod
     def _specialize_word(word):
@@ -187,7 +262,11 @@ class SourceCode:
                 return {
                     'PARENTHESES': Word.BR_CLOSE,
                     'BRACES': Word.SQB_CLOSE,
+                    'QUADROB': Word.QW_CLOSE,
                 }.get(self.kind, None)
+
+            def __repr__(self):
+                return f'Node({self.kind=}, {self.info=})'
 
             def as_dict(self):
                 for_child = []
@@ -201,8 +280,7 @@ class SourceCode:
 
         cur = Node('MAIN', rebel=[None, Word.SQB_OPEN])
 
-        for info, tp in self.codes[-1][0:]:
-            print(f'{info=}, {tp=}')
+        for info, tp in self.codes[-1]:
             if tp == Word.BR_OPEN:
                 new_item = Node('PARENTHESES', parent=cur, rebel=[info, tp])
                 cur.child.append(new_item)
@@ -211,10 +289,14 @@ class SourceCode:
                 new_item = Node('BRACES', parent=cur, rebel=[info, tp])
                 cur.child.append(new_item)
                 cur = new_item
+            elif tp == Word.QW_OPEN:
+                new_item = Node('QUADROB', parent=cur, rebel=[info, tp])
+                cur.child.append(new_item)
+                cur = new_item
             elif tp == cur.breakpoint:
                 cur = cur.parent
             else:
-                new_item = Node('STATEMENT', parent=cur,
+                new_item = Node('STATEMENT' if tp != Word.SEMI else ';', parent=cur,
                                 rebel=[info, tp])
                 cur.child.append(new_item)
         if cur.kind != 'MAIN':
@@ -225,28 +307,38 @@ class SourceCode:
         """ for assert: <SOME_WORD>(<PARENTHESES>){BRACES} e.g. <for>, <if> """
         struct_name = None
 
+        def __init__(self, sn):
+            self.struct_name = sn
+
         def check_parentheses(self, nde):
             raise NotImplementedError  # this method must be override
 
         @staticmethod
         def check_value(nde, begin_from):
-            list_of_av_for_value = map(lambda o: getattr(Word, o), [
-                'BR_CLOSE', 'BR_OPEN', 'MINUS', 'PLUS',  # todo: It's true?
-                'SQB_OPEN', 'SLESH', 'STAR', 'SQB_CLOSE',
-            ])
+            list_of_av_for_value = list(map(lambda o: getattr(Word, o), [
+                'BR_CLOSE', 'BR_OPEN', 'MINUS', 'PLUS', 'VAR_NAME', 'CONST_INT',
+                'SQB_OPEN', 'SLESH', 'STAR', 'SQB_CLOSE', 'CONST_STR', 'EQ',
+            ]))  # todo: It's true?
 
             assert len(nde.child) >= begin_from
             for chi in nde.child[begin_from:]:
                 if chi.info[1] not in list_of_av_for_value:
+                    pprint(f'{chi.info[1]=} not in {list_of_av_for_value=}')
                     raise LexicalError("todo:")  # invalid type node for <value>
 
         def validate(self, node):
             for i, ch in enumerate(node.child):
                 if ch.info[1] == self.struct_name:
-                    # todo: check out of range
-                    if node.child[i + 1].kind != 'PARENTHESES':
-                        raise LexicalError("todo:")
-                    if node.child[i + 2].kind != 'BRACES':
+                    try:
+                        if node.child[i - 1].kind != ';':
+                            raise LexicalError("todo:")
+                        if node.child[i + 1].kind != 'PARENTHESES':
+                            raise LexicalError("todo:")
+                        if node.child[i + 2].kind != 'BRACES':
+                            raise LexicalError("todo:")
+                        if node.child[i + 3].kind != ';':
+                            raise LexicalError("todo:")
+                    except IndexError:
                         raise LexicalError("todo:")
                     self.check_parentheses(node.child[i + 1])
 
@@ -278,44 +370,44 @@ class SourceCode:
                                    " or 2 place but is's absent")
 
             assert nde.child[bg].info[1] == Word.VAR_NAME
-            assert True if bg == 0 else nde.child[bg-1].info[1] in list_of_types
+            assert True if bg == 0 else nde.child[bg - 1].info[1] in list_of_types
             self_.check_value(nde, 2 + bg)
 
-        sas = SourceCode.AssertStructure()
-        sas.check_parentheses = check_parentheses
+        sas = SourceCode.AssertStructure(Word.FOR)
+        sas.check_parentheses = lambda nde: check_parentheses(sas, nde)
         sas.validate(self.program)
 
     def _assert_correct_if(self):
-        sas = SourceCode.AssertStructure()
+        sas = SourceCode.AssertStructure(Word.IF)
         sas.check_parentheses = lambda nde: sas.check_value(nde, 0)
         sas.validate(self.program)
 
 
 class Word(Enum):
-    FOR = auto()            # for
-    SEMI = auto()           # ;
-    STAR = auto()           # *
-    SLESH = auto()          # /
-    PLUS = auto()           # +
-    MINUS = auto()          # -
-    EQ = auto()             # =
-    IF = auto()             # if
-    BR_OPEN = auto()        # (
-    BR_CLOSE = auto()       # )
-    QW_OPEN = auto()        # [
-    QW_CLOSE = auto()       # ]
-    WORD = auto()           # <letter> + <letter or digit or _>*
-    INT = auto()            # int
-    FLOAT = auto()          # float
-    STR = auto()            # str
-    ARRAY = auto()          # array
-    CONST_STR = auto()      # "<utf-8>*" or '<utf-8>*'
-    CONST_FLOAT = auto()    # <digit>+.<digit>+
-    CONST_INT = auto()      # <digit>+
-    VAR_NAME = auto()       # <letter> + <letter or digit or _>*
-    SQB_OPEN = auto()       # {
-    SQB_CLOSE = auto()      # }
-    IN = auto()             # in
+    FOR = auto()  # for
+    SEMI = auto()  # ;
+    STAR = auto()  # *
+    SLESH = auto()  # /
+    PLUS = auto()  # +
+    MINUS = auto()  # -
+    EQ = auto()  # =
+    IF = auto()  # if
+    BR_OPEN = auto()  # (
+    BR_CLOSE = auto()  # )
+    QW_OPEN = auto()  # [
+    QW_CLOSE = auto()  # ]
+    WORD = auto()  # <letter> + <letter or digit or _>*
+    INT = auto()  # int
+    FLOAT = auto()  # float
+    STR = auto()  # str
+    ARRAY = auto()  # array
+    CONST_STR = auto()  # "<utf-8>*" or '<utf-8>*'
+    CONST_FLOAT = auto()  # <digit>+.<digit>+
+    CONST_INT = auto()  # <digit>+
+    VAR_NAME = auto()  # <letter> + <letter or digit or _>*
+    SQB_OPEN = auto()  # {
+    SQB_CLOSE = auto()  # }
+    IN = auto()  # in
 
 
 def safe_get(str_: str, subs, default=None):
@@ -341,7 +433,3 @@ def green_print(*args):
 def colourful(*args):
     fg.orange = Style(RgbFg(152, 150, 50))
     print(fg.orange, *args, fg.rs)
-
-
-if __name__ == '__main__':
-    main()
