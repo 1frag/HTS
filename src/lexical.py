@@ -73,7 +73,7 @@ class SourceCode:
                         ind += 1
                         continue
                     if node.child[ind][1] == Word.FOR:
-                        using_var, iter_obj = parse_br_in_for(node.child[ind + 1])
+                        using_var, iter_obj = parse_br_in_for(node.child[ind + 1]['body'][0])
                         node.child[ind] = {  # rewrite `for`-node
                             'type': 'FOR',
                             'using_var': using_var,
@@ -165,8 +165,9 @@ class SourceCode:
                     else:
                         raise LexicalError("todo:")
             elif code[i] == '"':
-                if ind := safe_get(code[i + 1:], '"'):
-                    i = put(i, i + ind + 2, 'STR')
+                colourful(f'{code[i+1:]=}')
+                if '"' in code[i + 1:]:
+                    i = put(i, i + code[i + 1:].index('"') + 2, 'STR')
                 else:
                     raise LexicalError("todo:")
             elif code[i] == "'":
