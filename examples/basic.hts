@@ -5,7 +5,7 @@ a = 123;
 b = 45;
 c = a + b + 678;
 
-if (true + False + 2) {  ~кнш да~
+if (true + False + 2 == 3) {  ~кнш да~
     out(a / b - c * 9);
 }
 

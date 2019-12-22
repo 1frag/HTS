@@ -6,7 +6,7 @@ from sty import (
     Style, RgbFg, fg
 )
 from pprint import pprint
-from typing import List, Any
+from typing import List, Any, Union
 from enum import auto, Enum
 from queue import Queue
 
@@ -16,8 +16,9 @@ def do(code, to_runner, to_lexical, with_running=True):
         nonlocal sc
         fg.some_color = Style(RgbFg(102, 153, 204))
         print(fg.some_color)
-        pprint(sc.program)
-        print(fg.some_color)
+        from json import dumps
+        print(dumps(eval(str(sc.program))))
+        print(fg.rs)
 
     try:
         to_runner.put_nowait(('START',))
@@ -38,7 +39,6 @@ class SourceCode:
 
     def __init__(self, code: str):
         self.codes = [code, ]  # type: List[Any]
-        self.result = {}
         self._prepare()
         self._parse_comment_and_string()
         self._parse_words()
@@ -46,8 +46,88 @@ class SourceCode:
         self._assert_correct_for()
         self._assert_correct_if()
         self._get_specific_statements()
+        self._get_other_statements()
+
+    def _get_other_statements(self):
+        def decl_var(lst):
+            if len(lst) < 2:
+                raise LexicalError('Ожидалось имя переменной')
+            name = lst[-1][0]
+            lst[-1:] = []
+            _ctp = [Word.INT, Word.STR, Word.FLOAT, Word.BOOL]
+            if lst[-1][1] not in [Word.INT, Word.STR, Word.FLOAT, Word.BOOL]:
+                raise LexicalError(f'Невалидный тип {lst[-1][1]} '
+                                   f'должен быть один из {_ctp}')
+            for it in lst[:-1]:
+                if it[1] != Word.ARRAY:
+                    raise LexicalError(f'Промежуточный тип не может быть {it[1]}')
+            return {
+                'type': 'DECL_VAR',
+                'name': name,
+                'atype': {
+                    'deep': len(lst) - 1,  # количество array до хранимого типа
+                    'end': lst[-1][1],  # тот самый последний хранимый тип
+                }
+            }
+
+        def apply_var(lst):
+            if lst[0][1] != Word.VAR_NAME:
+                raise LexicalError(f'Недопустимое слово, '
+                                   f'ожидалось имя переменной')
+            if lst[1][1] != Word.APPLY:
+                raise LexicalError('Недопустимое слово, ожидалось =')
+            return {
+                'type': 'APPLY_VAR',
+                'for_what': lst[0][0],
+                'value': eval_value(lst[2:]),
+            }
+
+        def eval_value(lst):
+            return {
+                'type': 'value',
+                'cmds': lst,
+            }
+
+        def which(lst):
+            """ Отличает:   декларацию переменной (есть type Word)
+                            присваивание переменной значение (есть APPLY Word)
+                            значение (остальное)
+            """
+            word_types = [Word.INT, Word.FLOAT, Word.STR, Word.ARRAY]
+            candidates = [False, False, True]
+            for nde in lst:
+                if isinstance(nde, dict):
+                    continue  # it is value
+                if nde[1] == Word.APPLY:
+                    candidates[::2] = True, False
+                if nde[1] in word_types:
+                    candidates[1::] = True, False
+            if candidates.count(True) != 1:
+                raise LexicalError('Неоднозначное выражение')
+            ind = candidates.index(True)
+            colourful(lst, ind, candidates)
+            return [apply_var, decl_var, eval_value][ind](lst)
+
+        def inner(node):
+            if node['type'] == 'STATEMENT':
+                new_item = which(node['body'])
+                node.clear()
+                node.update(new_item)
+            else:
+                colourful(node['type'])
+                for ch in node['body']:
+                    inner(ch)
+
+            if node['type'] == 'FOR':
+                node['using_var'] = decl_var(node['using_var'])
+                node['iter_obj'] = eval_value(node['iter_obj'])
+            elif node['type'] == 'IF':
+                node['condition'] = eval_value(node['condition'])
+
+        inner(self.program)
 
     def _get_specific_statements(self):
+
         def cleanup(lst):
             for item in lst:
                 if isinstance(item, list) and item[1] == Word.SEMI:
@@ -133,11 +213,10 @@ class SourceCode:
         to_runner.put_nowait(('END',))
 
     def _prepare(self):
-        try:
-            self.codes[0] = self.codes[0].replace('{', '{;')
-            self.codes[0] = self.codes[0].replace('}', '};')
-        except ValueError:
-            fatal('Not found {')
+        self.codes[0] = self.codes[0].replace('{', '{;')
+        self.codes[0] = self.codes[0].replace('}', '};')
+        self.codes[0] = self.codes[0].replace('[', ' [ ')
+        self.codes[0] = self.codes[0].replace(']', ' ] ')
 
     def _parse_comment_and_string(self):
         blocks, i, bgn, code = [], 0, 0, self.codes[-1]
@@ -200,7 +279,12 @@ class SourceCode:
                         if left != i:
                             yield [None, code[left:i]]
                         left = i + 1
-                    elif c in '{}()-+=/*;':
+                    elif code[i:i + 2] == '==':
+                        continue
+                    elif code[i - 1:i + 1] == '==':
+                        left = i + 1
+                        yield [None, '==']
+                    elif c in '{}()-+/*=;':
                         if left != i:
                             yield [None, code[left:i]]
                         left = i + 1
@@ -220,12 +304,14 @@ class SourceCode:
                 '}': Word.SQB_CLOSE,
                 '+': Word.PLUS,
                 '-': Word.MINUS,
-                '=': Word.EQ,
+                '==': Word.EQ,
+                '=': Word.APPLY,
                 'if': Word.IF,
                 '(': Word.BR_OPEN,
                 ')': Word.BR_CLOSE,
                 'int': Word.INT,
                 'float': Word.FLOAT,
+                'bool': Word.BOOL,
                 'str': Word.STR,
                 'array': Word.ARRAY,
                 'in': Word.IN,
@@ -325,6 +411,7 @@ class SourceCode:
             for chi in nde.child[begin_from:]:
                 if chi.info[1] not in list_of_av_for_value:
                     pprint(f'{chi.info[1]=} not in {list_of_av_for_value=}')
+                    pprint(list(map(lambda x: x.info, nde.child[begin_from:])))
                     raise LexicalError("todo:")  # invalid type node for <value>
 
         def validate(self, node):
@@ -385,33 +472,38 @@ class SourceCode:
 
 
 class Word(Enum):
-    FOR = auto()  # for
-    SEMI = auto()  # ;
-    STAR = auto()  # *
-    SLESH = auto()  # /
-    PLUS = auto()  # +
-    MINUS = auto()  # -
-    EQ = auto()  # =
-    IF = auto()  # if
-    BR_OPEN = auto()  # (
-    BR_CLOSE = auto()  # )
-    QW_OPEN = auto()  # [
-    QW_CLOSE = auto()  # ]
-    WORD = auto()  # <letter> + <letter or digit or _>*
-    INT = auto()  # int
-    FLOAT = auto()  # float
-    STR = auto()  # str
-    ARRAY = auto()  # array
-    CONST_STR = auto()  # "<utf-8>*" or '<utf-8>*'
-    CONST_FLOAT = auto()  # <digit>+.<digit>+
-    CONST_INT = auto()  # <digit>+
-    VAR_NAME = auto()  # <letter> + <letter or digit or _>*
-    SQB_OPEN = auto()  # {
-    SQB_CLOSE = auto()  # }
-    IN = auto()  # in
+    def __repr__(self):
+        return f'"{self.value}"'
+
+    FOR = 'for'
+    SEMI = ';'
+    STAR = '*'
+    SLESH = '/'
+    PLUS = '+'
+    MINUS = '-'
+    EQ = '=='
+    IF = 'if'
+    BR_OPEN = '('
+    BR_CLOSE = ')'
+    APPLY = '='
+    QW_OPEN = '['
+    QW_CLOSE = ']'
+    WORD = '_word'  # @deprecated
+    INT = 'int'
+    FLOAT = 'float'
+    BOOL = 'bool'
+    STR = 'str'
+    ARRAY = 'array'
+    CONST_STR = 'const_str'
+    CONST_FLOAT = 'const_float'
+    CONST_INT = 'const_int'
+    VAR_NAME = 'var_name'
+    SQB_OPEN = '{'
+    SQB_CLOSE = '}'
+    IN = 'in'
 
 
-def safe_get(str_: str, subs, default=None):
+def safe_get(str_: Union[str, list], subs: Any, default=None):
     # todo: add in str
     try:
         return str_.index(subs)
