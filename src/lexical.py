@@ -84,8 +84,8 @@ class SourceCode:
 
         def eval_value(lst):
             return {
-                'type': 'value',
-                'cmds': lst,
+                'type': 'calculation_tree',
+                'cmds': CalculationTree(lst),
             }
 
         def which(lst):
@@ -284,7 +284,7 @@ class SourceCode:
                     elif code[i - 1:i + 1] == '==':
                         left = i + 1
                         yield [None, '==']
-                    elif c in '{}()-+/*=;':
+                    elif c in '{}()-+/*=;,':
                         if left != i:
                             yield [None, code[left:i]]
                         left = i + 1
@@ -303,6 +303,7 @@ class SourceCode:
                 '{': Word.SQB_OPEN,
                 '}': Word.SQB_CLOSE,
                 '+': Word.PLUS,
+                ',': Word.COMMA,
                 '-': Word.MINUS,
                 '==': Word.EQ,
                 '=': Word.APPLY,
@@ -323,9 +324,11 @@ class SourceCode:
         self.codes.append(blocks)
 
     @staticmethod
-    def _specialize_word(word):
+    def _specialize_word(word: str):
         """ distinguishes nums, vars """
-        if num := re.match(r'^([0-9]+)(?:\.([0-9]+))?$', word):
+        if word in ['true', 'false', 'True', 'False']:
+            return word.lower(), Word.CONST_BOOL
+        elif num := re.match(r'^([0-9]+)(?:\.([0-9]+))?$', word):
             if num.group(2):
                 return float(word), Word.CONST_FLOAT
             return int(word), Word.CONST_INT
@@ -471,6 +474,71 @@ class SourceCode:
         sas.validate(self.program)
 
 
+class CalculationTree:
+    class Node:
+        def __init__(self, value=None):
+            self.value = value
+            self.children = None
+            self.next_node = None
+            self.across_op = None
+            self.params = None
+
+    def __init__(self, cmds):
+        if len(cmds) == 0:
+            raise LexicalError('Пустое выражение')
+        self.cmds = cmds
+        self.start_node = CalculationTree.Node()
+        self.make_nodes()
+
+    def make_nodes(self):
+        def create_node(cur):
+            """ Создает корректный Node в зависимости от типа cur """
+            if isinstance(cur, dict) and cur['type'] == 'SCOPE()':
+                new_node = CalculationTree.Node()
+                assert cur['body'][0] == 'STATEMENT'
+                inner(cur['body'][0]['body'], new_node)
+                return new_node
+            else:
+                assert isinstance(cur, list)
+                assert len(cur) == 2
+                assert cur[1] in [Word.CONST_FLOAT, Word.CONST_STR,
+                                  Word.CONST_INT, Word.CONST_BOOL,
+                                  Word.VAR_NAME]
+                # todo: возможно необходио передавать и cur[1]
+                return CalculationTree.Node(cur[0])
+
+        def as_params(cur: CalculationTree.Node, next_node: CalculationTree.Node):
+            """ В случае если next_node скобки тогда доопределяет cur
+            для вызова с этими параметрами
+            """
+            if not (isinstance(next_node, dict) and
+                    next_node['type'] == 'SCOPE()'):
+                return False
+            cur.params = next_node  # todo: parse params
+            return True
+
+        def as_operator(cur: CalculationTree.Node, next_node: CalculationTree.Node):
+            assert isinstance(next_node, list)
+            assert len(next_node) == 2
+            assert next_node[1] in [Word.PLUS, Word.MINUS, Word.STAR, Word.SLESH]
+            cur.across_op = next_node[1]
+
+        def inner(child: list, parent: CalculationTree.Node):
+            parent.children = child[0]
+            ind = 0
+            while ind < len(child):
+                new_node = create_node(child[ind])
+                if ind:
+                    child[ind - 1].next = new_node
+                if (len(child) > ind + 1) and as_params(new_node, child[ind + 1]):
+                    ind += 1
+                if len(child) > ind + 1:
+                    as_operator(new_node, child[ind + 1])
+                ind += 2
+
+        inner(self.cmds[0], self.start_node)
+
+
 class Word(Enum):
     def __repr__(self):
         return f'"{self.value}"'
@@ -483,6 +551,7 @@ class Word(Enum):
     MINUS = '-'
     EQ = '=='
     IF = 'if'
+    COMMA = ','
     BR_OPEN = '('
     BR_CLOSE = ')'
     APPLY = '='
@@ -494,6 +563,7 @@ class Word(Enum):
     BOOL = 'bool'
     STR = 'str'
     ARRAY = 'array'
+    CONST_BOOL = 'some_bool'
     CONST_STR = 'const_str'
     CONST_FLOAT = 'const_float'
     CONST_INT = 'const_int'
