@@ -39,14 +39,15 @@ class SourceCode:
 
     def __init__(self, code: str):
         self.codes = [code, ]  # type: List[Any]
-        self._prepare()
-        self._parse_comment_and_string()
-        self._parse_words()
-        self.program = self._parse_brackets()
-        self._assert_correct_for()
-        self._assert_correct_if()
-        self._get_specific_statements()
-        self._get_other_statements()
+        self._prepare()  # Подготовка кода
+        self._parse_comment_and_string()  # отделяем строки и комментарии от кода
+        self._parse_words()  # парсим слова (токены)
+        self.program = self._parse_brackets()  # отделяем скобки и формируем вложенность
+        self._assert_correct_for()  # делаем проверку на синтаксис for конструкции
+        self._assert_correct_if()  # делаем проверку на синтаксис if конструкции
+        self._get_specific_statements()  # различаем for | if | <statement>
+        self._get_other_statements()  # различаем <statement> на APPLY_VAR, DECL_VAR,
+        # для <value> строим дерево рассчета
 
     def _get_other_statements(self):
         def decl_var(lst):
