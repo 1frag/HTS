@@ -1,0 +1,11 @@
+version: "3.3"
+
+
+services:
+  main:
+    build:
+      context: .
+      args:
+        MODE: dev
+    volumes:
+      - ./:/opt/

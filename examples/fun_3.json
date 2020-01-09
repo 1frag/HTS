@@ -1,0 +1,28 @@
+{ "body": [ { "body": [
+        [ "out", "VAR_NAME" ],
+        { "body": [ { "body": [
+                [ 3, "CONST_INT" ],
+                [ null, "MINUS" ],
+                { "body": [{ "body": [
+                        [ 2, "CONST_INT" ],
+                        [ null, "PLUS" ],
+                        [ 16, "CONST_INT" ],
+                        [ null, "MINUS" ],
+                        { "body": [ { "body": [
+                                [ 3, "CONST_INT" ],
+                                [ null, "PLUS" ],
+                                [ 8, "CONST_INT" ]
+                              ], "type": "STATEMENT"
+                            } ],
+                          "type": "SCOPE()" }
+                      ],
+                      "type": "STATEMENT"
+                    } ], "type": "SCOPE()"
+                } ], "type": "STATEMENT"
+            } ], "type": "SCOPE()"
+        } ], "type": "STATEMENT"
+    } ], "type": "SCOPE{}"
+}
+
+
+
