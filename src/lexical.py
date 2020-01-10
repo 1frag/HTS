@@ -6,29 +6,26 @@ from sty import (
     Style, RgbFg, fg
 )
 from pprint import pprint
+from json import dumps
 from typing import List, Any, Union
-from enum import auto, Enum
-from queue import Queue
+from enum import Enum
+
+import runner
 
 
-def do(code, to_runner, to_lexical, with_running=True):
-    def present():
+def do(code):
+    def present():  # показать обработанные данные
         nonlocal sc
         fg.some_color = Style(RgbFg(102, 153, 204))
-        print(fg.some_color)
-        from json import dumps
-        print(dumps(eval(str(sc.program))))
-        print(fg.rs)
+        try:
+            print(fg.some_color)
+            print(dumps(eval(str(sc.program))))
+        finally:
+            print(fg.rs)
 
-    try:
-        to_runner.put_nowait(('START',))
-        sc = SourceCode(code)  # type: SourceCode
-        if with_running:
-            sc.present(to_runner, to_lexical)  # запустить код
-        else:
-            present()  # показать обработанные данные
-    finally:
-        to_runner.put_nowait(('END',))
+    sc = SourceCode(code)  # type: SourceCode
+    present()
+    # runner.RunTime().run(eval(str(sc.program)))
 
 
 class LexicalError(Exception):
@@ -47,7 +44,6 @@ class SourceCode:
         self._assert_correct_if()  # делаем проверку на синтаксис if конструкции
         self._get_specific_statements()  # различаем for | if | <statement>
         self._get_other_statements()  # различаем <statement> на APPLY_VAR, DECL_VAR,
-        # для <value> строим дерево рассчета
 
     def _get_other_statements(self):
         def decl_var(lst):
@@ -57,7 +53,7 @@ class SourceCode:
             lst[-1:] = []
             _ctp = [Word.INT, Word.STR, Word.FLOAT, Word.BOOL]
             if lst[-1][1] not in [Word.INT, Word.STR, Word.FLOAT, Word.BOOL]:
-                raise LexicalError(f'Невалидный тип {lst[-1][1]} '
+                raise LexicalError(f'Невалидный тип {lst[-1][0]} '
                                    f'должен быть один из {_ctp}')
             for it in lst[:-1]:
                 if it[1] != Word.ARRAY:
@@ -84,10 +80,18 @@ class SourceCode:
             }
 
         def eval_value(lst):
-            return {
-                'type': 'calculation_tree',
-                'cmds': CalculationTree(lst),
-            }
+            if NEW_VERSION_IS_READY := False:
+                colourful('Warning: ')
+                print(f'{NEW_VERSION_IS_READY=}')
+                return {
+                    'type': 'calculation_tree',
+                    'cmds': lst,
+                }
+            else:
+                return {
+                    'type': 'calculation_tree',
+                    'cmds': CalculationTree(lst),
+                }
 
         def which(lst):
             """ Отличает:   декларацию переменной (есть type Word)
@@ -96,6 +100,7 @@ class SourceCode:
             """
             word_types = [Word.INT, Word.FLOAT, Word.STR, Word.ARRAY]
             candidates = [False, False, True]
+            functions = [apply_var, decl_var, eval_value]
             for nde in lst:
                 if isinstance(nde, dict):
                     continue  # it is value
@@ -104,10 +109,12 @@ class SourceCode:
                 if nde[1] in word_types:
                     candidates[1::] = True, False
             if candidates.count(True) != 1:
-                raise LexicalError('Неоднозначное выражение')
+                for b, f in zip(candidates, functions):
+                    if b:
+                        print(f'строка может быть вида {f.__name__}')
+                raise LexicalError('Поэтому тут неоднозначное выражение')
             ind = candidates.index(True)
-            colourful(lst, ind, candidates)
-            return [apply_var, decl_var, eval_value][ind](lst)
+            return functions[ind](lst)
 
         def inner(node):
             if node['type'] == 'STATEMENT':
@@ -115,7 +122,6 @@ class SourceCode:
                 node.clear()
                 node.update(new_item)
             else:
-                colourful(node['type'])
                 for ch in node['body']:
                     inner(ch)
 
@@ -137,7 +143,6 @@ class SourceCode:
                     yield item
 
         def parse_br_in_for(node):
-            colourful(node)
             for ind, elem in enumerate(node['body']):
                 if elem[1] == Word.IN:
                     return node['body'][:ind], node['body'][ind + 1:]
@@ -173,7 +178,6 @@ class SourceCode:
                             del node.child[ind + 1]
                     else:
                         make, j = [node.child[ind], ], ind + 1
-                        print(node.child)
                         while j < len(node.child):
                             make.append(node.child[j])
                             cp = node.child[j]
@@ -200,18 +204,6 @@ class SourceCode:
                 return node.info
 
         self.program = inner(self.program)
-
-    def present(self, to_runner: Queue, to_lexical: Queue):  # top-level function
-        def _present(node):  # recursive method
-            if not node.child:
-                pass
-            else:
-                for nd in node.child:
-                    _present(nd)
-
-        to_runner.put_nowait(('START',))
-        _present(self.program)
-        to_runner.put_nowait(('END',))
 
     def _prepare(self):
         self.codes[0] = self.codes[0].replace('{', '{;')
@@ -245,7 +237,6 @@ class SourceCode:
                     else:
                         raise LexicalError("todo:")
             elif code[i] == '"':
-                colourful(f'{code[i+1:]=}')
                 if '"' in code[i + 1:]:
                     i = put(i, i + code[i + 1:].index('"') + 2, 'STR')
                 else:
@@ -335,7 +326,6 @@ class SourceCode:
             return int(word), Word.CONST_INT
         elif re.match(r'^[a-zA-Z][a-z_A-Z0-9]*$', word):
             return str(word), Word.VAR_NAME
-        green_print(word, f'"{word=}"')
         raise LexicalError("todo:")
 
     def _parse_brackets(self):
@@ -408,7 +398,7 @@ class SourceCode:
         def check_value(nde, begin_from):
             list_of_av_for_value = list(map(lambda o: getattr(Word, o), [
                 'BR_CLOSE', 'BR_OPEN', 'MINUS', 'PLUS', 'VAR_NAME', 'CONST_INT',
-                'SQB_OPEN', 'SLESH', 'STAR', 'SQB_CLOSE', 'CONST_STR', 'EQ',
+                'SQB_OPEN', 'SLESH', 'STAR', 'SQB_CLOSE', 'CONST_STR', 'EQ', 'CONST_BOOL',
             ]))  # todo: It's true?
 
             assert len(nde.child) >= begin_from
@@ -416,20 +406,20 @@ class SourceCode:
                 if chi.info[1] not in list_of_av_for_value:
                     pprint(f'{chi.info[1]=} not in {list_of_av_for_value=}')
                     pprint(list(map(lambda x: x.info, nde.child[begin_from:])))
-                    raise LexicalError("todo:")  # invalid type node for <value>
+                    raise LexicalError(f"{chi.info[1]} not in {list_of_av_for_value}")  # invalid type node for <value>
 
         def validate(self, node):
             for i, ch in enumerate(node.child):
                 if ch.info[1] == self.struct_name:
                     try:
                         if node.child[i - 1].kind != ';':
-                            raise LexicalError("todo:")
+                            raise LexicalError("Пропущена точка с запятой перед фором")
                         if node.child[i + 1].kind != 'PARENTHESES':
-                            raise LexicalError("todo:")
+                            raise LexicalError("фор должен иметь скобки")
                         if node.child[i + 2].kind != 'BRACES':
-                            raise LexicalError("todo:")
+                            raise LexicalError("после круглых скобок должны быть фигурные")
                         if node.child[i + 3].kind != ';':
-                            raise LexicalError("todo:")
+                            raise LexicalError("!!Такого никогда не будет!!")
                     except IndexError:
                         raise LexicalError("todo:")
                     self.check_parentheses(node.child[i + 1])
@@ -476,6 +466,11 @@ class SourceCode:
 
 
 class CalculationTree:
+    def __repr__(self):
+        if self.is_empty_value:
+            return '"_EMPTY_"'
+        return str(self.cmds)
+
     class Node:
         def __init__(self, value=None):
             self.value = value
@@ -486,7 +481,9 @@ class CalculationTree:
 
     def __init__(self, cmds):
         if len(cmds) == 0:
-            raise LexicalError('Пустое выражение')
+            self.is_empty_value = True
+            return
+        self.is_empty_value = False
         self.cmds = cmds
         self.start_node = CalculationTree.Node()
         self.make_nodes()
@@ -496,7 +493,13 @@ class CalculationTree:
             """ Создает корректный Node в зависимости от типа cur """
             if isinstance(cur, dict) and cur['type'] == 'SCOPE()':
                 new_node = CalculationTree.Node()
-                assert cur['body'][0] == 'STATEMENT'
+                assert cur['body'][0]['type'] == 'STATEMENT'
+                inner(cur['body'][0]['body'], new_node)
+                return new_node
+            elif isinstance(cur, dict) and cur['type'] == 'SCOPE[]':
+                # todo: ..., тут явно что то не так
+                new_node = CalculationTree.Node()
+                assert cur['body'][0]['type'] == 'STATEMENT'
                 inner(cur['body'][0]['body'], new_node)
                 return new_node
             else:
@@ -515,29 +518,52 @@ class CalculationTree:
             if not (isinstance(next_node, dict) and
                     next_node['type'] == 'SCOPE()'):
                 return False
-            cur.params = next_node  # todo: parse params
+            cur.params = []
+
+            def gen():
+                nonlocal next_node
+                for item in next_node['body']:
+                    if item == [None, Word.COMMA]:
+                        yield '__STOP__'
+                    else:
+                        yield item
+
+            buffer = []
+            for it in gen():
+                if it == '__STOP__':
+                    cur.params.append(CalculationTree(buffer))
+                    buffer = []
+                else:
+                    buffer.append(it)
             return True
 
         def as_operator(cur: CalculationTree.Node, next_node: CalculationTree.Node):
+            print(next_node)
             assert isinstance(next_node, list)
             assert len(next_node) == 2
-            assert next_node[1] in [Word.PLUS, Word.MINUS, Word.STAR, Word.SLESH]
+            assert next_node[1] in [Word.PLUS, Word.MINUS, Word.STAR, Word.SLESH,
+                                    Word.EQ, Word.COMMA], f'Ожидался оператор полу' \
+                                                          f'чили {next_node[1]!r}'
             cur.across_op = next_node[1]
 
         def inner(child: list, parent: CalculationTree.Node):
+            if isinstance(child[0], dict) and child[0].get('type') == 'STATEMENT':
+                child = child[0]['body']
             parent.children = child[0]
-            ind = 0
+            ind, prev = 0, None
             while ind < len(child):
+                colourful(child); print(',')
                 new_node = create_node(child[ind])
-                if ind:
-                    child[ind - 1].next = new_node
+                if prev:
+                    prev.next = new_node
                 if (len(child) > ind + 1) and as_params(new_node, child[ind + 1]):
                     ind += 1
                 if len(child) > ind + 1:
                     as_operator(new_node, child[ind + 1])
                 ind += 2
+                prev = new_node
 
-        inner(self.cmds[0], self.start_node)
+        inner(self.cmds, self.start_node)
 
 
 class Word(Enum):
@@ -564,7 +590,7 @@ class Word(Enum):
     BOOL = 'bool'
     STR = 'str'
     ARRAY = 'array'
-    CONST_BOOL = 'some_bool'
+    CONST_BOOL = 'const_bool'
     CONST_STR = 'const_str'
     CONST_FLOAT = 'const_float'
     CONST_INT = 'const_int'
