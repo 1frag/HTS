@@ -25,7 +25,7 @@ def do(code):
 
     sc = SourceCode(code)  # type: SourceCode
     present()
-    # runner.RunTime().run(eval(str(sc.program)))
+    runner.RunTime().run(eval(str(sc.program)))
 
 
 class LexicalError(Exception):

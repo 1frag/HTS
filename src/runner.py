@@ -24,12 +24,14 @@ class Node:
         if isinstance(dct.get('cmds'), list):
             cmds_nodes = list(map(lambda x: Node(x), dct['cmds']))
             self.first_child = cmds_nodes[0]
+            cmds_nodes[-1].parent = self
             for i in range(len(cmds_nodes) - 1):
                 cmds_nodes[i].parent = self
                 cmds_nodes[i].next = cmds_nodes[i + 1]
         if isinstance(dct.get('body'), list):
             body_nodes = list(map(lambda x: Node(x), dct['body']))
             self.first_child = body_nodes[0]
+            body_nodes[-1].parent = self
             for i in range(len(body_nodes) - 1):
                 body_nodes[i].parent = self
                 body_nodes[i].next = body_nodes[i + 1]
@@ -46,7 +48,12 @@ class Node:
                 else:
                     o.i__value__ = False
             return o
-        raise RuntimeError()
+        if self.ktype == 'var_name':
+            if r := RunTime().table_with_vars.get(self.value):
+                return r
+            raise NameError(f'name {self.value} is not defined')
+        raise NotImplementedError(f'Нет реализации представления в'
+                                  f' виде объекта ноду ктайпа {self.ktype=}')
 
     def safe_next(self):
         if hasattr(self, 'first_child'):
@@ -61,8 +68,26 @@ class Node:
         return self.next
 
 
+def is_fun(obj_or_node):
+    if isinstance(obj_or_node, HTSObject):
+        return obj_or_node.i__class__ == 'fun'
+    if isinstance(obj_or_node, Node):
+        try:
+            return obj_or_node.like_object().__class__ == 'fun'
+        except:
+            return False
+
+
 class RunTime:
     table_with_vars = {}
+
+    def __new__(cls):
+        if not hasattr(cls, 'instance'):
+            cls.instance = super().__new__(cls)
+        return cls.instance
+
+    def __init__(self):
+        self.table_with_vars = box()
 
     def run(self, program: dict):
         """ Получили структурированный json начинается работа в рантайме """
@@ -94,27 +119,34 @@ class RunTime:
         def apply(obj_: Optional[HTSObject], attachment: Union[Node, HTSObject]) -> HTSObject:
             if obj_ is None:
                 return attachment.like_object()
-            if getattr(attachment, 'ktype', None) in '-+%/*':
+            print(attachment.__dict__)
+            if is_fun(attachment):
+                setattr(obj_, 'with_fun', attachment)
+                return obj_
+            if getattr(attachment, 'ktype', None) and getattr(attachment, 'ktype') in '-+%/*,':
                 setattr(obj_, 'with_op', getattr(attachment, 'ktype'))
                 return obj_
-            if not hasattr(attachment, 'with_op'):
-                print(attachment.__dict__, obj_.i__class__)
+            if not hasattr(obj_, 'with_op') or not getattr(obj_, 'with_op'):
                 raise RuntimeError('Нужен оператор а так получается object от object(а)')
-            op = getattr(attachment, 'with_op')
+            op = getattr(obj_, 'with_op')
+            print(op, f'{obj_.__dict__=}',
+                  f'{attachment.__dict__ if isinstance(attachment, HTSObject) else attachment.like_object().__dict__=}')
             obj_ = {
                 '+': lambda a, b: a + b,
                 '-': lambda a, b: a - b,
                 '*': lambda a, b: a * b,
                 '/': lambda a, b: a / b,
                 '%': lambda a, b: a % b,
+                ',': lambda a, b: a & b,
             }[op](obj_,
                   attachment if isinstance(attachment, HTSObject) else attachment.like_object())
             return obj_
 
         def list_to_node(lst: list):
             n = Node({}, is_empty=True)
-            n.first_child = lst[0]
             nlst: List[Node] = list(map(lambda x: Node(x), lst))
+            n.first_child = nlst[0]
+            nlst[-1].parent = n
             for m in range(len(lst) - 1):
                 nlst[m].parent = n
                 nlst[m].next = nlst[m + 1]
@@ -133,6 +165,7 @@ class RunTime:
             for lst in result_:
                 n = Node({}, is_empty=True)
                 n.first_child = lst[0]
+                lst[-1].parent = n
                 for m in range(len(lst) - 1):
                     lst[m].parent = node
                     lst[m].next = lst[m + 1]
@@ -143,32 +176,26 @@ class RunTime:
         if getattr(now, 'ktype', None) == '-':
             now = Node({}, is_empty=True)
             now.next = line.first_child
-            now.value = NONE
-        while now is not None:
+            now.value = 0
+
+        while now is not None and now != THE_END_OF_PROGRAM:
             print('BEGIN')
             if getattr(now, 'type') == 'SCOPE()':
                 print('1')
-                obj = self.exec(now)
+                obj = self.exec(list_to_node(now.body[0]['body']))
             elif getattr(now, 'type') == 'SCOPE[]':
                 print('2')
                 obj = list(init_list(now))
             elif getattr(now, 'type') == 'STATEMENT':
                 print('3')
-                obj = list_to_node(now.body)
+                obj = self.exec(list_to_node(now.body))
             else:
-                print('4')
+                print('5')
                 obj = now
-            now = now.safe_next()
+            now = now.next
             print('END')
             result = apply(result, obj)
         return result
-
-
-class LatestType(Enum):
-    STR = auto()
-    INT = auto()
-    FLOAT = auto()
-    BOOL = auto()
 
 
 class Variable:
